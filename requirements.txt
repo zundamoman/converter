@@ -1,3 +1,5 @@
 streamlit
 geopandas
+pandas
+pyshp
 shapely
