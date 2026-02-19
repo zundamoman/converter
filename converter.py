@@ -127,7 +127,7 @@ with tab2:
 # タブ3：SHP一括修復
 # ==========================================
 with tab3:
-    st.subheader("不整合なSHPファイルを物理修復します。")
+    st.subheader("SHPファイルを修復します。")
     uploaded_files_repair = st.file_uploader("SHP/SHX/DBFファイルをまとめてドロップ", accept_multiple_files=True, key="repair")
 
     if uploaded_files_repair:
@@ -186,3 +186,4 @@ with tab3:
                 if success_count > 0:
                     st.success(f"✅ {success_count} 件修復完了")
                     st.download_button("📥 修復済みを保存", zip_buffer.getvalue(), "repaired.zip", key="dl_repair")
+
