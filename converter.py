@@ -22,10 +22,11 @@ st.info("ファイルをアップロード後、「実行」ボタンを押す�
 # ----------------------------------------------------------------
 # タブでUIを分割
 # ----------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🚁 DJI 境界線変換", 
     "🚜 トプコン A-Bライン変換", 
-    "🔧 SHP一括修復"
+    "🔧 SHP一括修復",
+    "📂 トプコンまとめて変換"
 ])
 
 # ==========================================
@@ -127,7 +128,7 @@ with tab2:
 # タブ3：SHP一括修復
 # ==========================================
 with tab3:
-    st.subheader("SHPファイルを修復します。")
+    st.subheader("不整合なSHPファイルを物理修復します。")
     uploaded_files_repair = st.file_uploader("SHP/SHX/DBFファイルをまとめてドロップ", accept_multiple_files=True, key="repair")
 
     if uploaded_files_repair:
@@ -187,3 +188,108 @@ with tab3:
                     st.success(f"✅ {success_count} 件修復完了")
                     st.download_button("📥 修復済みを保存", zip_buffer.getvalue(), "repaired.zip", key="dl_repair")
 
+# ==========================================
+# タブ4：トプコンデータまとめて変換
+# ==========================================
+with tab4:
+    st.subheader("トプコンデータまとめて変換")
+    st.caption("cliet/farm/field(.zip)")
+
+    # --- 内部関数定義 ---
+    def sub_process_ab_line(field_root, ablines_dir):
+        for root, dirs, files in os.walk(ablines_dir):
+            for f in files:
+                if f.lower().endswith(".ini"):
+                    ini_path = os.path.join(root, f)
+                    base_name = os.path.splitext(f)[0]
+                    try:
+                        config = configparser.ConfigParser()
+                        with open(ini_path, 'rb') as fb:
+                            raw_data = fb.read()
+                        content = None
+                        for enc in ['utf-8', 'utf-16', 'shift-jis']:
+                            try:
+                                content = raw_data.decode(enc); break
+                            except: continue
+                        if content:
+                            config.read_string(content)
+                            if 'APoint' in config and 'BPoint' in config:
+                                lat_a, lon_a = float(config['APoint']['Latitude']), float(config['APoint']['Longitude'])
+                                lat_b, lon_b = float(config['BPoint']['Latitude']), float(config['BPoint']['Longitude'])
+                                line = LineString([(lon_a, lat_a), (lon_b, lat_b)])
+                                gdf = gpd.GeoDataFrame([{'Name': base_name, 'geometry': line}], crs="EPSG:4326")
+                                gdf.to_file(os.path.join(field_root, f"{base_name}.shp"), driver='ESRI Shapefile', encoding='utf-8')
+                    except Exception as e:
+                        st.error(f"❌ ABライン変換失敗: {f} - {e}")
+
+    def sub_process_boundary(shp_path, output_dir):
+        base_name = os.path.splitext(os.path.basename(shp_path))[0]
+        output_base = os.path.join(output_dir, base_name)
+        prj_data = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
+        try:
+            reader = shapefile.Reader(os.path.splitext(shp_path)[0])
+            writer = shapefile.Writer(output_base, shapeType=reader.shapeType)
+            writer.fields = list(reader.fields[1:])
+            for i, shape_rec in enumerate(reader.shapeRecords()):
+                geom = shape_rec.shape
+                new_parts = []
+                for pi in range(len(geom.parts)):
+                    si, ei = geom.parts[pi], (geom.parts[pi+1] if pi+1 < len(geom.parts) else len(geom.points))
+                    pts = geom.points[si:ei]
+                    if pts and pts[0] != pts[-1]: pts.append(pts[0])
+                    new_parts.append(pts)
+                writer.poly(new_parts)
+                rec = shape_rec.record.as_dict()
+                rec.update({'id': str(i+1), 'Name': base_name, 'visibility': 1, 'altitudeMo': "clampToGround"})
+                writer.record(**rec)
+            writer.close()
+            with open(output_base + ".prj", "w") as f: f.write(prj_data)
+        except Exception as e:
+            st.error(f"❌ 境界修復失敗: {base_name} - {e}")
+
+    uploaded_zip_topcon_all = st.file_uploader("ZIPファイルをアップロード", type="zip", key="topcon_all")
+
+    if uploaded_zip_topcon_all:
+        if st.button("変換とクリーンアップを開始", key="btn_topcon_all"):
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                extract_path = os.path.join(tmp_dir, "extracted")
+                with zipfile.ZipFile(uploaded_zip_topcon_all, 'r') as z:
+                    z.extractall(extract_path)
+
+                for root, dirs, files in os.walk(extract_path, topdown=False):
+                    if "ABLines" in dirs or "Boundaries" in dirs:
+                        # 一時避難所
+                        temp_save = os.path.join(tmp_dir, "temp_shp_only")
+                        if os.path.exists(temp_save): shutil.rmtree(temp_save)
+                        os.makedirs(temp_save)
+
+                        # ABライン抽出
+                        ab_dir = os.path.join(root, "ABLines")
+                        if os.path.exists(ab_dir):
+                            sub_process_ab_line(temp_save, ab_dir)
+                        
+                        # 境界修復
+                        bound_dir = os.path.join(root, "Boundaries")
+                        if os.path.exists(bound_dir):
+                            for f in os.listdir(bound_dir):
+                                if f.lower().endswith(".shp"):
+                                    sub_process_boundary(os.path.join(bound_dir, f), temp_save)
+
+                        # Fieldフォルダを一度空にする
+                        for entry in os.listdir(root):
+                            entry_path = os.path.join(root, entry)
+                            if os.path.isdir(entry_path): shutil.rmtree(entry_path)
+                            else: os.remove(entry_path)
+
+                        # 変換済みデータのみ戻す
+                        for item in os.listdir(temp_save):
+                            shutil.move(os.path.join(temp_save, item), root)
+                        
+                        shutil.rmtree(temp_save)
+
+                final_zip_name = os.path.join(tmp_dir, "final_output")
+                shutil.make_archive(final_zip_name, 'zip', extract_path)
+                
+                with open(final_zip_name + ".zip", "rb") as f:
+                    st.success("✅ 変換完了！不要なフォルダは削除されました。")
+                    st.download_button("📥 変換済みデータをダウンロード", f, file_name="topcon_converted_clean.zip")
