@@ -87,17 +87,51 @@ if maker == "DJI":
 # トプコン のタブ構成
 # ==========================================
 elif maker == "トプコン":
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4 = st.tabs([
+        "🛰️ CRV座標解析",
         "📈 トプコン(曲線対応)一括変換",
         "🚜 トプコン A-Bライン変換",
         "🔧 SHP一括修復",
         "📂 トプコンまとめて変換"
     ])
 
+    # --- タブ0：トプコンCRV 絶対座標・自動解析ツール ---
+    with tab0:
+        st.subheader("🛰️ トプコンCRV 絶対座標・自動解析")
+        st.write("FJDynamicsへの完全自動変換を目指し、ヘッダ内の隠し座標を特定します。")
+        u_crv_debug = st.file_uploader(".crvファイルをアップロード (解析用)", type=['crv'], key="crv_debug")
+
+        if u_crv_debug:
+            binary_data = u_crv_debug.read()
+            header = binary_data[:64]
+            
+            st.subheader("1. 隠れた座標の検索結果 (Double 64bit)")
+            found_coords = []
+            for i in range(len(header) - 8):
+                val = struct.unpack('<d', header[i:i+8])[0]
+                # 日本近辺の範囲(緯度20-50, 経度120-150)でチェック
+                if (20.0 < val < 50.0) or (120.0 < val < 150.0):
+                    found_coords.append({"Offset (Hex)": hex(i), "Found Value": val, "Type": "Coordinate?"})
+
+            if found_coords:
+                st.success("✅ 座標らしき数値が見つかりました！")
+                st.table(pd.DataFrame(found_coords))
+            else:
+                st.warning("ヘッダ内に直接的な緯度経度(Double)は見つかりませんでした。別の形式を探します。")
+
+            st.subheader("2. 整数値(Int32)による座標保持の可能性")
+            st.write("緯度経度が1000000倍された整数などで記録されている場合があります。")
+            ints = []
+            for i in range(0, 32, 4):
+                val = struct.unpack('<i', header[i:i+4])[0]
+                ints.append({"Offset": hex(i), "Value": val})
+            st.table(pd.DataFrame(ints))
+            st.info("💡 ヒント: ここに緯度・経度に関連する数値が出ていれば、その値を基準に自動変換が可能です。")
+
     # --- タブ1：トプコンデータ一括変換 (直線・曲線・境界) ---
     with tab1:
         st.subheader("トプコンデータ一括変換 (直線・曲線・境界)")
-        st.caption("client/farm/fieldの中にABLines / Boundaries / Curves フォルダを含むZIPをアップロードしてください")
+        st.caption("Curves内の.crvファイルをFJDynamics向け絶対座標SHPに変換します")
 
         def process_crv_line(field_root, curves_dir):
             for root, dirs, files in os.walk(curves_dir):
@@ -109,8 +143,11 @@ elif maker == "トプコン":
                             with open(crv_path, 'rb') as fb:
                                 binary_data = fb.read()
                             if len(binary_data) < 0x48: continue
+                            
+                            # ヘッダから絶対開始座標を取得 (Offset 0x0, 0x8)
                             base_lat = struct.unpack('<d', binary_data[0:8])[0]
                             base_lon = struct.unpack('<d', binary_data[8:16])[0]
+                            
                             coords = []
                             data_section = binary_data[0x40:]
                             lat_per_m = 1.0 / 111111.0
@@ -179,13 +216,13 @@ elif maker == "トプコン":
             except Exception as e:
                 st.error(f"❌ 境界修復失敗: {base_name} - {e}")
 
-        uploaded_zip_tab5 = st.file_uploader("ZIPファイルをアップロード", type="zip", key="topcon_v2")
+        uploaded_zip_topcon_v2 = st.file_uploader("ZIPファイルをアップロード", type="zip", key="topcon_v2")
 
-        if uploaded_zip_tab5:
+        if uploaded_zip_topcon_v2:
             if st.button("変換とクリーンアップを開始", key="btn_v2"):
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     extract_path = os.path.join(tmp_dir, "extracted")
-                    with zipfile.ZipFile(uploaded_zip_tab5, 'r') as z:
+                    with zipfile.ZipFile(uploaded_zip_topcon_v2, 'r') as z:
                         z.extractall(extract_path)
 
                     for root, dirs, files in os.walk(extract_path, topdown=False):
@@ -220,7 +257,7 @@ elif maker == "トプコン":
                     shutil.make_archive(final_zip_name, 'zip', extract_path)
                     with open(final_zip_name + ".zip", "rb") as f:
                         st.success("✅ 変換完了！ABLines, Boundaries, CurvesすべてがSHPに統合されました。")
-                        st.download_button("📥 変換済みデータをダウンロード", f, file_name="topcon_v2_converted.zip")
+                        st.download_button("📥 変換済みデータをダウンロード", f, file_name="topcon_to_fjd_converted.zip")
 
     # --- タブ2：トプコン A-Bライン変換 ---
     with tab2:
@@ -315,7 +352,7 @@ elif maker == "トプコン":
     # --- タブ4：トプコンデータまとめて変換 ---
     with tab4:
         st.subheader("トプコンデータまとめて変換")
-        st.caption("cliet/farm/field(.zip)")
+        st.caption("cliet/farm/field(.zip)構造のデータを処理します")
 
         def sub_process_ab_line(field_root, ablines_dir):
             for root, dirs, files in os.walk(ablines_dir):
