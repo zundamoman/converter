@@ -95,36 +95,6 @@ elif maker == "トプコン":
       
     ])
 
-    # --- タブ2：トプコンCRV 絶対座標・自動解析ツール ---
-    with tab2:
-        st.subheader("📈 トプコン曲線")
-        st.caption("crvファイルをアップロードしてください。")
-        u_crv_debug = st.file_uploader(".crvファイルをアップロード ", type=['crv'], key="crv_debug")
-
-        if u_crv_debug:
-            binary_data = u_crv_debug.read()
-            header = binary_data[:64]
-            
-            st.subheader("1. 隠れた座標の検索結果 (Double 64bit)")
-            found_coords = []
-            for i in range(len(header) - 8):
-                val = struct.unpack('<d', header[i:i+8])[0]
-                if (20.0 < val < 50.0) or (120.0 < val < 150.0):
-                    found_coords.append({"Offset (Hex)": hex(i), "Found Value": val, "Type": "Coordinate?"})
-
-            if found_coords:
-                st.success("✅ 座標らしき数値が見つかりました！")
-                st.table(pd.DataFrame(found_coords))
-            else:
-                st.warning("ヘッダ内に直接的な緯度経度(Double)は見つかりませんでした。")
-
-            st.subheader("2. 整数値(Int32)による座標保持の可能性")
-            ints = []
-            for i in range(0, 32, 4):
-                val = struct.unpack('<i', header[i:i+4])[0]
-                ints.append({"Offset": hex(i), "Value": val})
-            st.table(pd.DataFrame(ints))
-
     # --- タブ0：トプコンデータ一括変換 ---
     with tab0:
         st.subheader("トプコンデータ一括変換")
@@ -268,7 +238,7 @@ elif maker == "トプコン":
 
     # --- タブ1：トプコン ABライン変換 ---
     with tab1:
-        st.subheader("トプコンの `.ini` ファイルをアップロード")
+        st.subheader("トプコン ABライン変換")
         st.caption(".iniファイルをアップロードしてください。")
         uploaded_files_topcon = st.file_uploader("iniファイルをドロップ", type="ini", accept_multiple_files=True, key="topcon_ab")
         # (既存の個別変換コードが続く...)
@@ -301,9 +271,39 @@ elif maker == "トプコン":
                     st.success(f"✅ {success_count} 件変換完了")
                     st.download_button("📥 ダウンロード", zip_buffer.getvalue(), "topcon_ab.zip")
 
+        # --- タブ2：トプコンCRV 絶対座標・自動解析ツール ---
+    with tab2:
+        st.subheader("トプコン　曲線変換")
+        st.caption("crvファイルをアップロードしてください。")
+        u_crv_debug = st.file_uploader(".crvファイルをアップロード ", type=['crv'], key="crv_debug")
+
+        if u_crv_debug:
+            binary_data = u_crv_debug.read()
+            header = binary_data[:64]
+            
+            st.subheader("1. 隠れた座標の検索結果 (Double 64bit)")
+            found_coords = []
+            for i in range(len(header) - 8):
+                val = struct.unpack('<d', header[i:i+8])[0]
+                if (20.0 < val < 50.0) or (120.0 < val < 150.0):
+                    found_coords.append({"Offset (Hex)": hex(i), "Found Value": val, "Type": "Coordinate?"})
+
+            if found_coords:
+                st.success("✅ 座標らしき数値が見つかりました！")
+                st.table(pd.DataFrame(found_coords))
+            else:
+                st.warning("ヘッダ内に直接的な緯度経度(Double)は見つかりませんでした。")
+
+            st.subheader("2. 整数値(Int32)による座標保持の可能性")
+            ints = []
+            for i in range(0, 32, 4):
+                val = struct.unpack('<i', header[i:i+4])[0]
+                ints.append({"Offset": hex(i), "Value": val})
+            st.table(pd.DataFrame(ints))
+
     # --- タブ3：トプコン 境界 修復 ---
     with tab3:
-        st.subheader("トプコン 境界 修復")
+        st.subheader("トプコン 境界修復")
         st.caption("shp,shx.dbfファイルをアップロードしてください。")
         uploaded_files_repair = st.file_uploader("SHP/SHX/DBFをドロップ", accept_multiple_files=True, key="repair")
         # (既存の修復コード...)
@@ -349,4 +349,5 @@ elif maker == "トプコン":
                                 master_zip.writestr(f"{item['uniq']}/{item['uniq']}.prj", 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
                             except Exception: continue
                     st.download_button("📥 修復済みをダウンロード", zip_buffer.getvalue(), "repaired.zip")
+
 
