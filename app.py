@@ -90,7 +90,7 @@ elif maker == "トプコン":
     tab0, tab1, tab2, tab3, = st.tabs([
         "📈 トプコン一括変換",
         "📈 トプコン ABライン変換",
-        "🚜 FJD完全自動コンバーター",
+        "📈 トプコン 曲線変換",
         "🔧 トプコン 境界修復",
     ])
 
@@ -314,7 +314,7 @@ elif maker == "トプコン":
             result, lat, lon = convert_crv_to_fjd_logic(binary)
             
             if result:
-                st.success("変換が完了しました。開始地点: {lat:.6f}, {lon:.6f}")
+                st.success(f"変換が完了しました。開始地点: {lat:.6f}, {lon:.6f}")
                 st.download_button(
                     label="📥 変換データをダウンロード(.zip)", 
                     data=result, 
@@ -373,5 +373,6 @@ elif maker == "トプコン":
                                 master_zip.writestr(f"{item['uniq']}/{item['uniq']}.prj", 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
                             except Exception: continue
                     st.download_button("📥 変換データをダウンロード(.zip)", zip_buffer.getvalue(), "repaired_topcon.zip")
+
 
 
