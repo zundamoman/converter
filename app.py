@@ -25,7 +25,7 @@ st.sidebar.title("🚜 Agri Data Converter")
 maker = st.sidebar.radio("メーカーを選択してください", ["DJI", "トプコン"])
 
 st.title(f"{maker} データ変換ツール")
-st.info("ファイルをアップロード後、「実行」ボタンを押すと変換・修復が始まります。")
+st.info("ファイルをアップロード後、「変換開始」ボタンを押すと変換・修復が始まります。")
 
 # ==========================================
 # DJI のタブ構成
@@ -39,7 +39,7 @@ if maker == "DJI":
         uploaded_files_dji = st.file_uploader("DJIファイルをドロップ", accept_multiple_files=True, key="dji")
 
         if uploaded_files_dji:
-            if st.button("🚀 DJIデータを一括変換する", key="btn_dji"):
+            if st.button("🚀 変換開始", key="btn_dji"):
                 zip_buffer = io.BytesIO()
                 success_count = 0
                 
@@ -78,7 +78,7 @@ if maker == "DJI":
                                 continue
 
                 if success_count > 0:
-                    st.success(f"✅ {success_count} 件変換完了")
+                    st.success(f"✅ {success_count} 件の変換が完了しました。")
                     st.download_button("📥 変換データをダウンロード(.zip)", zip_buffer.getvalue(), "dji_converted.zip", key="dl_dji")
                 else:
                     st.error("変換可能なポリゴンデータが見つかりませんでした。")
@@ -229,7 +229,7 @@ elif maker == "トプコン":
         uploaded_zip_topcon_v2 = st.file_uploader("一括変換用ZIPをアップロード", type="zip", key="topcon_v2")
 
         if uploaded_zip_topcon_v2:
-            if st.button("変換開始", key="btn_v2"):
+            if st.button("🚀 変換開始", key="btn_v2"):
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     extract_path = os.path.join(tmp_dir, "extracted")
                     with zipfile.ZipFile(uploaded_zip_topcon_v2, 'r') as z:
@@ -266,7 +266,7 @@ elif maker == "トプコン":
                     final_zip_name = os.path.join(tmp_dir, "final_output_v2")
                     shutil.make_archive(final_zip_name, 'zip', extract_path)
                     with open(final_zip_name + ".zip", "rb") as f:
-                        st.success("変換が完了しました。")
+                        st.success("✅ 変換が完了しました。")
                         st.download_button("📥 変換データをダウンロード(.zip)", f, file_name="topcon_all_data.zip")
 
     # --- タブ1：トプコン ABライン変換 ---
@@ -275,7 +275,7 @@ elif maker == "トプコン":
         st.caption(".iniファイルをアップロードしてください。")
         uploaded_files_topcon = st.file_uploader("iniファイルをドロップ", type="ini", accept_multiple_files=True, key="topcon_ab_single")
         if uploaded_files_topcon:
-            if st.button("変換開始", key="btn_topcon_ab_single"):
+            if st.button("🚀 変換開始", key="btn_topcon_ab_single"):
                 zip_buffer = io.BytesIO()
                 success_count = 0
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -300,7 +300,7 @@ elif maker == "トプコン":
                                     success_count += 1
                             except Exception: continue
                 if success_count > 0:
-                    st.success("変換が完了しました。")
+                    st.success("✅ 変換が完了しました。")
                     st.download_button("📥 変換済みデータをダウンロード(.zip)", zip_buffer.getvalue(), "topcon_abline.zip")
 
     # --- タブ2：トプコン 曲線変換 ---
@@ -310,19 +310,21 @@ elif maker == "トプコン":
         u_crv_single = st.file_uploader(".crvファイルをアップロード", type=['crv'], key="fjd_single")
 
         if u_crv_single:
-            binary = u_crv_single.read()
-            result, lat, lon = convert_crv_to_fjd_logic(binary)
-            
-            if result:
-                st.success(f"変換が完了しました。開始地点: {lat:.6f}, {lon:.6f}")
-                st.download_button(
-                    label="📥 変換データをダウンロード(.zip)", 
-                    data=result, 
-                    file_name=f"fjd_ready_{os.path.splitext(u_crv_single.name)[0]}.zip",
-                    mime="application/zip"
-                )
-            else:
-                st.error("データの解析に失敗しました。座標情報が含まれていない可能性があります。")
+            # 「変換開始」ボタンの追加
+            if st.button("🚀 変換開始", key="btn_crv_single"):
+                binary = u_crv_single.read()
+                result, lat, lon = convert_crv_to_fjd_logic(binary)
+                
+                if result:
+                    st.success(f"✅ 変換が完了しました。開始地点: {lat:.6f}, {lon:.6f}")
+                    st.download_button(
+                        label="📥 変換データをダウンロード(.zip)", 
+                        data=result, 
+                        file_name=f"fjd_ready_{os.path.splitext(u_crv_single.name)[0]}.zip",
+                        mime="application/zip"
+                    )
+                else:
+                    st.error("データの解析に失敗しました。座標情報が含まれていない可能性があります。")
 
     # --- タブ3：トプコン 境界 修復 ---
     with tab3:
@@ -330,7 +332,7 @@ elif maker == "トプコン":
         st.caption("shp, shx, dbfファイルをアップロードしてください。")
         uploaded_files_repair = st.file_uploader("SHP/SHX/DBFをドロップ", accept_multiple_files=True, key="repair_v3")
         if uploaded_files_repair:
-            if st.button("変換開始", key="btn_repair_v3"):
+            if st.button("🚀 変換開始", key="btn_repair_v3"):
                 name_counts = defaultdict(int)
                 shp_registry = []
                 with tempfile.TemporaryDirectory() as tmp_dir:
@@ -372,7 +374,6 @@ elif maker == "トプコン":
                                     master_zip.write(work_out + ext, f"{item['uniq']}/{item['uniq']}{ext}")
                                 master_zip.writestr(f"{item['uniq']}/{item['uniq']}.prj", 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
                             except Exception: continue
+                    
+                    st.success("✅ 変換が完了しました。")
                     st.download_button("📥 変換データをダウンロード(.zip)", zip_buffer.getvalue(), "repaired_topcon.zip")
-
-
-
