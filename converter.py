@@ -10,6 +10,8 @@ import re
 import configparser
 import shutil
 import shapefile  # pip install pyshp
+import struct
+import numpy as np
 from collections import defaultdict
 from shapely.geometry import shape, Polygon, MultiPolygon, LineString
 
@@ -22,11 +24,12 @@ st.info("ファイルをアップロード後、「実行」ボタンを押す�
 # ----------------------------------------------------------------
 # タブでUIを分割
 # ----------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🚁 DJI 境界線変換", 
     "🚜 トプコン A-Bライン変換", 
     "🔧 SHP一括修復",
-    "📂 トプコンまとめて変換"
+    "📂 トプコンまとめて変換",
+    "📈 トプコン(曲線対応)一括変換"
 ])
 
 # ==========================================
@@ -195,7 +198,6 @@ with tab4:
     st.subheader("トプコンデータまとめて変換")
     st.caption("cliet/farm/field(.zip)")
 
-    # --- 内部関数定義 ---
     def sub_process_ab_line(field_root, ablines_dir):
         for root, dirs, files in os.walk(ablines_dir):
             for f in files:
@@ -258,30 +260,25 @@ with tab4:
 
                 for root, dirs, files in os.walk(extract_path, topdown=False):
                     if "ABLines" in dirs or "Boundaries" in dirs:
-                        # 一時避難所
                         temp_save = os.path.join(tmp_dir, "temp_shp_only")
                         if os.path.exists(temp_save): shutil.rmtree(temp_save)
                         os.makedirs(temp_save)
 
-                        # ABライン抽出
                         ab_dir = os.path.join(root, "ABLines")
                         if os.path.exists(ab_dir):
                             sub_process_ab_line(temp_save, ab_dir)
                         
-                        # 境界修復
                         bound_dir = os.path.join(root, "Boundaries")
                         if os.path.exists(bound_dir):
                             for f in os.listdir(bound_dir):
                                 if f.lower().endswith(".shp"):
                                     sub_process_boundary(os.path.join(bound_dir, f), temp_save)
 
-                        # Fieldフォルダを一度空にする
                         for entry in os.listdir(root):
                             entry_path = os.path.join(root, entry)
                             if os.path.isdir(entry_path): shutil.rmtree(entry_path)
                             else: os.remove(entry_path)
 
-                        # 変換済みデータのみ戻す
                         for item in os.listdir(temp_save):
                             shutil.move(os.path.join(temp_save, item), root)
                         
@@ -293,3 +290,144 @@ with tab4:
                 with open(final_zip_name + ".zip", "rb") as f:
                     st.success("✅ 変換完了！不要なフォルダは削除されました。")
                     st.download_button("📥 変換済みデータをダウンロード", f, file_name="topcon_converted_clean.zip")
+
+# ==========================================
+# タブ5：トプコンデータ一括変換 (直線・曲線・境界)
+# ==========================================
+with tab5:
+    st.subheader("トプコンデータ一括変換 (直線・曲線・境界)")
+    st.caption("client/farm/fieldの中にABLines / Boundaries / Curves フォルダを含むZIPをアップロードしてください")
+
+    def process_crv_line(field_root, curves_dir):
+        """Curves内の.crvを解析し、SHPとしてfield_rootへ出力"""
+        for root, dirs, files in os.walk(curves_dir):
+            for f in files:
+                if f.lower().endswith(".crv"):
+                    crv_path = os.path.join(root, f)
+                    base_name = os.path.splitext(f)[0]
+                    try:
+                        with open(crv_path, 'rb') as fb:
+                            binary_data = fb.read()
+                        
+                        if len(binary_data) < 0x48: continue
+
+                        base_lat = struct.unpack('<d', binary_data[0:8])[0]
+                        base_lon = struct.unpack('<d', binary_data[8:16])[0]
+
+                        coords = []
+                        data_section = binary_data[0x40:]
+                        lat_per_m = 1.0 / 111111.0
+                        lon_per_m = 1.0 / (111111.0 * np.cos(np.radians(base_lat)))
+
+                        for i in range(0, len(data_section) - 8, 8):
+                            dx, dy = struct.unpack('<ff', data_section[i:i+8])
+                            if -20000 < dx < 20000:
+                                actual_lon = base_lon + (dx * lon_per_m)
+                                actual_lat = base_lat + (-dy * lat_per_m)
+                                coords.append((actual_lon, actual_lat))
+
+                        if len(coords) >= 2:
+                            line = LineString(coords)
+                            gdf = gpd.GeoDataFrame([{'Name': base_name, 'geometry': line}], crs="EPSG:4326")
+                            gdf.to_file(os.path.join(field_root, f"{base_name}.shp"), driver='ESRI Shapefile', encoding='utf-8')
+                    except Exception as e:
+                        st.error(f"❌ Curves変換失敗: {f} - {e}")
+
+    def process_ab_line_memo1(field_root, ablines_dir):
+        for root, dirs, files in os.walk(ablines_dir):
+            for f in files:
+                if f.lower().endswith(".ini"):
+                    ini_path = os.path.join(root, f)
+                    base_name = os.path.splitext(f)[0]
+                    try:
+                        config = configparser.ConfigParser()
+                        with open(ini_path, 'rb') as fb:
+                            raw_data = fb.read()
+                        content = None
+                        for enc in ['utf-8', 'utf-16', 'shift-jis']:
+                            try:
+                                content = raw_data.decode(enc); break
+                            except: continue
+                        if content:
+                            config.read_string(content)
+                            if 'APoint' in config and 'BPoint' in config:
+                                lat_a, lon_a = float(config['APoint']['Latitude']), float(config['APoint']['Longitude'])
+                                lat_b, lon_b = float(config['BPoint']['Latitude']), float(config['BPoint']['Longitude'])
+                                line = LineString([(lon_a, lat_a), (lon_b, lat_b)])
+                                gdf = gpd.GeoDataFrame([{'Name': base_name, 'geometry': line}], crs="EPSG:4326")
+                                gdf.to_file(os.path.join(field_root, f"{base_name}.shp"), driver='ESRI Shapefile', encoding='utf-8')
+                    except Exception as e:
+                        st.error(f"❌ ABライン変換失敗: {f} - {e}")
+
+    def process_boundary_memo2(shp_path, output_dir):
+        base_name = os.path.splitext(os.path.basename(shp_path))[0]
+        output_base = os.path.join(output_dir, base_name)
+        prj_data = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
+        try:
+            reader = shapefile.Reader(os.path.splitext(shp_path)[0])
+            writer = shapefile.Writer(output_base, shapeType=reader.shapeType)
+            writer.fields = list(reader.fields[1:])
+            for i, shape_rec in enumerate(reader.shapeRecords()):
+                geom = shape_rec.shape
+                new_parts = []
+                for pi in range(len(geom.parts)):
+                    si, ei = geom.parts[pi], (geom.parts[pi+1] if pi+1 < len(geom.parts) else len(geom.points))
+                    pts = geom.points[si:ei]
+                    if pts and pts[0] != pts[-1]: pts.append(pts[0])
+                    new_parts.append(pts)
+                writer.poly(new_parts)
+                rec = shape_rec.record.as_dict()
+                rec.update({'id': str(i+1), 'Name': base_name, 'visibility': 1, 'altitudeMo': "clampToGround"})
+                writer.record(**rec)
+            writer.close()
+            with open(output_base + ".prj", "w") as f: f.write(prj_data)
+        except Exception as e:
+            st.error(f"❌ 境界修復失敗: {base_name} - {e}")
+
+    uploaded_zip_tab5 = st.file_uploader("ZIPファイルをアップロード", type="zip", key="topcon_tab5")
+
+    if uploaded_zip_tab5:
+        if st.button("変換とクリーンアップを開始", key="btn_tab5"):
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                extract_path = os.path.join(tmp_dir, "extracted")
+                with zipfile.ZipFile(uploaded_zip_tab5, 'r') as z:
+                    z.extractall(extract_path)
+
+                for root, dirs, files in os.walk(extract_path, topdown=False):
+                    if any(d in dirs for d in ["ABLines", "Boundaries", "Curves"]):
+                        temp_save = os.path.join(tmp_dir, "temp_shp_only_tab5")
+                        if os.path.exists(temp_save): shutil.rmtree(temp_save)
+                        os.makedirs(temp_save)
+
+                        # 各データの処理
+                        ab_dir = os.path.join(root, "ABLines")
+                        if os.path.exists(ab_dir):
+                            process_ab_line_memo1(temp_save, ab_dir)
+                        
+                        bound_dir = os.path.join(root, "Boundaries")
+                        if os.path.exists(bound_dir):
+                            for f in os.listdir(bound_dir):
+                                if f.lower().endswith(".shp"):
+                                    process_boundary_memo2(os.path.join(bound_dir, f), temp_save)
+
+                        curves_dir = os.path.join(root, "Curves")
+                        if os.path.exists(curves_dir):
+                            process_crv_line(temp_save, curves_dir)
+
+                        # クリーンアップと移動
+                        for entry in os.listdir(root):
+                            entry_path = os.path.join(root, entry)
+                            if os.path.isdir(entry_path): shutil.rmtree(entry_path)
+                            else: os.remove(entry_path)
+
+                        for item in os.listdir(temp_save):
+                            shutil.move(os.path.join(temp_save, item), root)
+                        
+                        shutil.rmtree(temp_save)
+
+                final_zip_name = os.path.join(tmp_dir, "final_output_tab5")
+                shutil.make_archive(final_zip_name, 'zip', extract_path)
+                
+                with open(final_zip_name + ".zip", "rb") as f:
+                    st.success("✅ 変換完了！ABLines, Boundaries, CurvesすべてがSHPに統合されました。")
+                    st.download_button("📥 変換済みデータをダウンロード", f, file_name="topcon_to_fjd_converted.zip", key="dl_tab5")
