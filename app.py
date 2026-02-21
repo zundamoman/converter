@@ -87,19 +87,19 @@ if maker == "DJI":
 # トプコン のタブ構成
 # ==========================================
 elif maker == "トプコン":
-    tab0, tab1, tab2, tab3, tab4 = st.tabs([
-        "🛰️ CRV座標解析",
-        "📈 トプコン(曲線対応)一括変換",
-        "🚜 トプコン A-Bライン変換",
-        "🔧 SHP一括修復",
-        "📂 トプコンまとめて変換"
+    tab0, tab1, tab2, tab3, = st.tabs([
+        "📈 トプコン一括変換",
+        "📈 トプコン ABライン変換",
+        "📈 トプコン 曲線 変換",
+        "🔧 トプコン 境界 修復",
+      
     ])
 
-    # --- タブ0：トプコンCRV 絶対座標・自動解析ツール ---
-    with tab0:
-        st.subheader("🛰️ トプコンCRV 絶対座標・自動解析")
-        st.write("FJDynamicsへの完全自動変換を目指し、ヘッダ内の隠し座標を特定します。")
-        u_crv_debug = st.file_uploader(".crvファイルをアップロード (解析用)", type=['crv'], key="crv_debug")
+    # --- タブ2：トプコンCRV 絶対座標・自動解析ツール ---
+    with tab2:
+        st.subheader("📈 トプコン曲線")
+        st.write("crvファイルをアップロードしてください。")
+        u_crv_debug = st.file_uploader(".crvファイルをアップロード ", type=['crv'], key="crv_debug")
 
         if u_crv_debug:
             binary_data = u_crv_debug.read()
@@ -125,10 +125,10 @@ elif maker == "トプコン":
                 ints.append({"Offset": hex(i), "Value": val})
             st.table(pd.DataFrame(ints))
 
-    # --- タブ1：トプコンデータ一括変換 (FJD対応ロジック搭載) ---
-    with tab1:
-        st.subheader("トプコンデータ一括変換 (FJDynamics完全対応)")
-        st.caption("FJDインポート用として、.crv内の隠し絶対座標を自動で適用します。")
+    # --- タブ0：トプコンデータ一括変換 ---
+    with tab0:
+        st.subheader("トプコンデータ一括変換")
+        st.caption("Client/farm/field/ABLines,Boudaries,curves　のフォルダをZIP形式でアップロードしてください。")
 
         def process_crv_line_fjd_style(field_root, curves_dir):
             """FJD完全自動コンバーターのロジックを統合した変換関数"""
@@ -266,9 +266,10 @@ elif maker == "トプコン":
                         st.success("✅ FJDynamics対応形式での一括変換が完了しました。")
                         st.download_button("📥 変換済みデータをダウンロード", f, file_name="topcon_to_fjd_ready.zip")
 
-    # --- タブ2：トプコン A-Bライン変換 (単体) ---
-    with tab2:
+    # --- タブ1：トプコン ABライン変換 ---
+    with tab1:
         st.subheader("トプコンの `.ini` ファイルをアップロード")
+        st.caption(".iniファイルをアップロードしてください。")
         uploaded_files_topcon = st.file_uploader("iniファイルをドロップ", type="ini", accept_multiple_files=True, key="topcon_ab")
         # (既存の個別変換コードが続く...)
         if uploaded_files_topcon:
@@ -300,9 +301,10 @@ elif maker == "トプコン":
                     st.success(f"✅ {success_count} 件変換完了")
                     st.download_button("📥 ダウンロード", zip_buffer.getvalue(), "topcon_ab.zip")
 
-    # --- タブ3：SHP一括修復 ---
+    # --- タブ3：トプコン 境界 修復 ---
     with tab3:
-        st.subheader("不整合なSHPファイルを物理修復")
+        st.subheader("トプコン 境界 修復")
+        st.caption("shp,shx.dbfファイルをアップロードしてください。")
         uploaded_files_repair = st.file_uploader("SHP/SHX/DBFをドロップ", accept_multiple_files=True, key="repair")
         # (既存の修復コード...)
         if uploaded_files_repair:
@@ -347,14 +349,3 @@ elif maker == "トプコン":
                                 master_zip.writestr(f"{item['uniq']}/{item['uniq']}.prj", 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
                             except Exception: continue
                     st.download_button("📥 修復済みをダウンロード", zip_buffer.getvalue(), "repaired.zip")
-
-    # --- タブ4：トプコンデータまとめて変換 ---
-    with tab4:
-        st.subheader("トプコンデータまとめて変換")
-        st.caption("不要フォルダを削除し、SHPのみを整理して出力します")
-        # (既存のまとめて変換コードが続く...)
-        uploaded_zip_topcon_all = st.file_uploader("ZIPファイルをアップロード", type="zip", key="topcon_all")
-        if uploaded_zip_topcon_all:
-            if st.button("実行", key="btn_topcon_all"):
-                # (既存の処理ロジックをそのまま適用)
-                pass
