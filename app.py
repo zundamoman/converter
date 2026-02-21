@@ -266,7 +266,7 @@ elif maker == "トプコン":
                     final_zip_name = os.path.join(tmp_dir, "final_output_v2")
                     shutil.make_archive(final_zip_name, 'zip', extract_path)
                     with open(final_zip_name + ".zip", "rb") as f:
-                        st.success("✅ SHP形式での一括変換が完了しました。")
+                        st.success("変換が完了しました。")
                         st.download_button("📥 変換データをダウンロード(.zip)", f, file_name="topcon_all_data.zip")
 
     # --- タブ1：トプコン ABライン変換 ---
@@ -300,7 +300,7 @@ elif maker == "トプコン":
                                     success_count += 1
                             except Exception: continue
                 if success_count > 0:
-                    st.success(f"✅ {success_count} 件変換完了")
+                    st.success("変換が完了しました。")
                     st.download_button("📥 変換済みデータをダウンロード(.zip)", zip_buffer.getvalue(), "topcon_abline.zip")
 
     # --- タブ2：トプコン 曲線変換 ---
@@ -314,7 +314,7 @@ elif maker == "トプコン":
             result, lat, lon = convert_crv_to_fjd_logic(binary)
             
             if result:
-                st.success(f"✅ 解析完了！開始地点: {lat:.6f}, {lon:.6f}")
+                st.success("変換が完了しました。開始地点: {lat:.6f}, {lon:.6f}")
                 st.download_button(
                     label="📥 変換データをダウンロード(.zip)", 
                     data=result, 
@@ -373,4 +373,5 @@ elif maker == "トプコン":
                                 master_zip.writestr(f"{item['uniq']}/{item['uniq']}.prj", 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
                             except Exception: continue
                     st.download_button("📥 変換データをダウンロード(.zip)", zip_buffer.getvalue(), "repaired_topcon.zip")
+
 
