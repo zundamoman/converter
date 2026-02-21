@@ -90,15 +90,15 @@ elif maker == "トプコン":
     tab0, tab1, tab2, tab3, = st.tabs([
         "📈 トプコン一括変換",
         "📈 トプコン ABライン変換",
-        "📈 トプコン 曲線 変換",
-        "🔧 トプコン 境界 修復",
+        "📈 トプコン 曲線変換",
+        "🔧 トプコン 境界修復",
       
     ])
 
     # --- タブ2：トプコンCRV 絶対座標・自動解析ツール ---
     with tab2:
         st.subheader("📈 トプコン曲線")
-        st.write("crvファイルをアップロードしてください。")
+        st.caption("crvファイルをアップロードしてください。")
         u_crv_debug = st.file_uploader(".crvファイルをアップロード ", type=['crv'], key="crv_debug")
 
         if u_crv_debug:
@@ -349,3 +349,4 @@ elif maker == "トプコン":
                                 master_zip.writestr(f"{item['uniq']}/{item['uniq']}.prj", 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
                             except Exception: continue
                     st.download_button("📥 修復済みをダウンロード", zip_buffer.getvalue(), "repaired.zip")
+
