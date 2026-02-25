@@ -34,7 +34,7 @@ def process_crv_to_gdf(binary_data, base_name):
 
         for i in range(0, len(data_section) - 8, 8):
             dx, dy = struct.unpack('<ff', data_section[i:i+8])
-            if -20000 < dx < 20000:
+            if -50000 < dx < 50000: # 許容範囲を少し広めに設定
                 actual_lon = base_lon + (dx * lon_per_m)
                 actual_lat = base_lat + (-dy * lat_per_m)
                 coords.append((actual_lon, actual_lat))
@@ -48,9 +48,13 @@ def process_ini_to_gdf(content, base_name):
     config = configparser.ConfigParser()
     try:
         config.read_string(content)
-        if 'APoint' in config and 'BPoint' in config:
-            lat_a, lon_a = float(config['APoint']['Latitude']), float(config['APoint']['Longitude'])
-            lat_b, lon_b = float(config['BPoint']['Latitude']), float(config['BPoint']['Longitude'])
+        # APoint/BPoint または Point1/Point2 の両方に対応
+        p1 = config['APoint'] if 'APoint' in config else config['Point1'] if 'Point1' in config else None
+        p2 = config['BPoint'] if 'BPoint' in config else config['Point2'] if 'Point2' in config else None
+        
+        if p1 and p2:
+            lat_a, lon_a = float(p1['Latitude']), float(p1['Longitude'])
+            lat_b, lon_b = float(p2['Latitude']), float(p2['Longitude'])
             line = LineString([(lon_a, lat_a), (lon_b, lat_b)])
             return gpd.GeoDataFrame([{'Name': base_name, 'geometry': line}], crs="EPSG:4326")
     except: pass
@@ -93,7 +97,7 @@ if maker == "DJI":
     tab1, = st.tabs(["🚁 DJI 境界線変換"])
     with tab1:
         st.subheader("DJI (JSON) → SHP 一括変換")
-        u_files = st.file_uploader("DJIファイルをアップロード", accept_multiple_files=True)
+        u_files = st.file_uploader("DJIファイルをアップロード", accept_multiple_files=True, key="dji_up")
         if u_files and st.button("🚀 DJI変換開始"):
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w") as zf, tempfile.TemporaryDirectory() as td:
@@ -114,7 +118,7 @@ if maker == "DJI":
                         if features:
                             base = os.path.splitext(uf.name)[0]
                             gdf = gpd.GeoDataFrame(features, crs="EPSG:4326")
-                            gdf.to_file(os.path.join(td, base + ".shp"))
+                            gdf.to_file(os.path.join(td, base + ".shp"), driver='ESRI Shapefile')
                             for ext in ['.shp', '.shx', '.dbf', '.prj']:
                                 if os.path.exists(os.path.join(td, base + ext)):
                                     zf.write(os.path.join(td, base + ext), arcname=f"{base}/{base}{ext}")
@@ -124,93 +128,110 @@ if maker == "DJI":
 elif maker == "トプコン":
     t1, t2, t3, t4 = st.tabs(["🚀 統合一括変換", "📈 ABライン一括", "📈 曲線一括", "🔧 境界修復一括"])
 
-    # 1. 統合一括変換 (重要: クリーンアップ徹底版)
+    # 1. 統合一括変換
     with t1:
-        st.subheader("トプコン統合変換 (ZIP内全フォルダ対象)")
-        st.caption("ABLines/Boundaries/Curvesフォルダを含むZIPを変換し、SHPのみにクリーンアップします。")
-        u_zip = st.file_uploader("ZIPをアップロード", type="zip")
+        st.subheader("トプコン統合変換")
+        st.caption("ABLines/Boundaries/Curvesフォルダを含むZIPをSHPのみの構成に変換・整理します。")
+        u_zip = st.file_uploader("ZIPをアップロード", type="zip", key="top_integrated")
         if u_zip and st.button("🚀 統合変換と整理を開始"):
             with tempfile.TemporaryDirectory() as tmp_dir:
                 ext_path = os.path.join(tmp_dir, "extracted")
                 with zipfile.ZipFile(u_zip, 'r') as z: z.extractall(ext_path)
 
-                # 各フィールドフォルダを探索
                 for root, dirs, files in os.walk(ext_path, topdown=False):
-                    if any(d in dirs for d in ["ABLines", "Boundaries", "Curves"]):
-                        # 変換済みファイルを一時保存するフォルダ
+                    # 各フィールドレベルのフォルダ（ABLinesなどを含む場所）を見つける
+                    if any(d.lower() in [x.lower() for x in dirs] for d in ["ABLines", "Boundaries", "Curves"]):
                         temp_out = os.path.join(tmp_dir, "temp_out")
                         if os.path.exists(temp_out): shutil.rmtree(temp_out)
                         os.makedirs(temp_out)
-
-                        # ABLines 変換
-                        d_ab = os.path.join(root, "ABLines")
-                        if os.path.exists(d_ab):
-                            for f in os.listdir(d_ab):
-                                if f.lower().endswith(".ini"):
-                                    with open(os.path.join(d_ab, f), 'rb') as fb:
-                                        raw = fb.read()
-                                        for enc in ['shift-jis', 'utf-8', 'utf-16']:
-                                            try:
-                                                gdf = process_ini_to_gdf(raw.decode(enc), os.path.splitext(f)[0])
-                                                if gdf is not None:
-                                                    gdf.to_file(os.path.join(temp_out, os.path.splitext(f)[0] + ".shp"))
-                                                break
-                                            except: continue
-
-                        # Curves 変換
-                        d_cv = os.path.join(root, "Curves")
-                        if os.path.exists(d_cv):
-                            for f in os.listdir(d_cv):
-                                if f.lower().endswith(".crv"):
-                                    with open(os.path.join(d_cv, f), 'rb') as fb:
-                                        gdf = process_crv_to_gdf(fb.read(), os.path.splitext(f)[0])
-                                        if gdf is not None:
-                                            gdf.to_file(os.path.join(temp_out, os.path.splitext(f)[0] + ".shp"))
-
-                        # Boundaries 変換
-                        d_bn = os.path.join(root, "Boundaries")
-                        if os.path.exists(d_bn):
-                            for f in os.listdir(d_bn):
-                                if f.lower().endswith(".shp"):
-                                    repair_shp_file(os.path.join(d_bn, os.path.splitext(f)[0]), os.path.join(temp_out, os.path.splitext(f)[0]), os.path.splitext(f)[0])
-
-                        # --- クリーンアップ：フィールドフォルダの中身を空にしてSHPを戻す ---
-                        for item in os.listdir(root):
-                            item_path = os.path.join(root, item)
-                            if os.path.isdir(item_path): shutil.rmtree(item_path)
-                            else: os.remove(item_path)
                         
-                        for item in os.listdir(temp_out):
-                            shutil.move(os.path.join(temp_out, item), os.path.join(root, item))
+                        found_files = []
+
+                        # --- ABLines 探索と変換 ---
+                        for d in dirs:
+                            if d.lower() == "ablines":
+                                ab_path = os.path.join(root, d)
+                                for f in os.listdir(ab_path):
+                                    if f.lower().endswith(".ini"):
+                                        with open(os.path.join(ab_path, f), 'rb') as fb:
+                                            raw = fb.read()
+                                            for enc in ['shift-jis', 'utf-8', 'utf-16']:
+                                                try:
+                                                    base = os.path.splitext(f)[0]
+                                                    gdf = process_ini_to_gdf(raw.decode(enc), base)
+                                                    if gdf is not None:
+                                                        gdf.to_file(os.path.join(temp_out, f"AB_{base}.shp"), driver='ESRI Shapefile')
+                                                        found_files.append(f"ABライン: {f}")
+                                                    break
+                                                except: continue
+
+                        # --- Curves 探索と変換 ---
+                        for d in dirs:
+                            if d.lower() == "curves":
+                                cv_path = os.path.join(root, d)
+                                for f in os.listdir(cv_path):
+                                    if f.lower().endswith(".crv"):
+                                        with open(os.path.join(cv_path, f), 'rb') as fb:
+                                            base = os.path.splitext(f)[0]
+                                            gdf = process_crv_to_gdf(fb.read(), base)
+                                            if gdf is not None:
+                                                gdf.to_file(os.path.join(temp_out, f"Curve_{base}.shp"), driver='ESRI Shapefile')
+                                                found_files.append(f"曲線: {f}")
+
+                        # --- Boundaries 探索と変換 ---
+                        for d in dirs:
+                            if d.lower() == "boundaries":
+                                bn_path = os.path.join(root, d)
+                                for f in os.listdir(bn_path):
+                                    if f.lower().endswith(".shp"):
+                                        base = os.path.splitext(f)[0]
+                                        if repair_shp_file(os.path.join(bn_path, base), os.path.join(temp_out, f"Bnd_{base}"), base):
+                                            found_files.append(f"境界: {f}")
+
+                        # 変換に成功したファイルがあれば、元のフィールド内を掃除して入れ替える
+                        if found_files:
+                            st.write(f"📁 処理中: {os.path.basename(root)}")
+                            for msg in found_files: st.write(f"  ✅ {msg}")
+                            
+                            # フィールド内（root）の既存ファイルを全削除
+                            for item in os.listdir(root):
+                                item_path = os.path.join(root, item)
+                                if os.path.isdir(item_path): shutil.rmtree(item_path)
+                                else: os.remove(item_path)
+                            
+                            # 変換済みSHP一式をrootへ移動
+                            for item in os.listdir(temp_out):
+                                shutil.move(os.path.join(temp_out, item), os.path.join(root, item))
 
                 final_zip = os.path.join(tmp_dir, "integrated_output")
                 shutil.make_archive(final_zip, 'zip', ext_path)
                 with open(final_zip + ".zip", "rb") as f:
-                    st.success("✅ 統合変換が完了しました。不要なファイルは削除されました。")
-                    st.download_button("📥 変換データを保存", f, "topcon_integrated.zip")
+                    st.success("✅ 全てのデータの変換とクリーンアップが完了しました。")
+                    st.download_button("📥 変換データをダウンロード", f, "topcon_integrated.zip")
 
-    # 2. ABライン一括 (.ini)
+    # 2. ABライン一括
     with t2:
-        st.subheader("ABライン複数変換")
-        u_inis = st.file_uploader("複数の .ini を選択", type="ini", accept_multiple_files=True)
-        if u_inis and st.button("🚀 ABライン一括処理"):
+        st.subheader("ABライン一括変換")
+        u_inis = st.file_uploader(".iniファイルを複数選択", type="ini", accept_multiple_files=True, key="ab_multi")
+        if u_inis and st.button("🚀 ABライン変換"):
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w") as zf, tempfile.TemporaryDirectory() as td:
                 for f in u_inis:
                     base = os.path.splitext(f.name)[0]
-                    gdf = process_ini_to_gdf(f.read().decode("shift-jis", errors="ignore"), base)
+                    content = f.read().decode("shift-jis", errors="ignore")
+                    gdf = process_ini_to_gdf(content, base)
                     if gdf is not None:
                         out = os.path.join(td, base)
-                        gdf.to_file(out + ".shp")
+                        gdf.to_file(out + ".shp", driver='ESRI Shapefile')
                         for ext in ['.shp', '.shx', '.dbf', '.prj']:
                             if os.path.exists(out + ext): zf.write(out + ext, f"{base}/{base}{ext}")
             st.download_button("📥 ABライン保存", zip_buf.getvalue(), "topcon_ablines.zip")
 
-    # 3. 曲線一括 (.crv)
+    # 3. 曲線一括
     with t3:
-        st.subheader("曲線複数変換")
-        u_crvs = st.file_uploader("複数の .crv を選択", type="crv", accept_multiple_files=True)
-        if u_crvs and st.button("🚀 曲線一括処理"):
+        st.subheader("曲線一括変換")
+        u_crvs = st.file_uploader(".crvファイルを複数選択", type="crv", accept_multiple_files=True, key="crv_multi")
+        if u_crvs and st.button("🚀 曲線変換"):
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w") as zf, tempfile.TemporaryDirectory() as td:
                 for f in u_crvs:
@@ -218,16 +239,16 @@ elif maker == "トプコン":
                     gdf = process_crv_to_gdf(f.read(), base)
                     if gdf is not None:
                         out = os.path.join(td, base)
-                        gdf.to_file(out + ".shp")
+                        gdf.to_file(out + ".shp", driver='ESRI Shapefile')
                         for ext in ['.shp', '.shx', '.dbf', '.prj']:
                             if os.path.exists(out + ext): zf.write(out + ext, f"{base}/{base}{ext}")
-            st.download_button("📥 曲線データを保存", zip_buf.getvalue(), "topcon_curves.zip")
+            st.download_button("📥 曲線保存", zip_buf.getvalue(), "topcon_curves.zip")
 
-    # 4. 境界修復一括 (SHP)
+    # 4. 境界修復一括
     with t4:
-        st.subheader("境界SHP複数修復")
-        u_shps = st.file_uploader("SHP/SHX/DBFを選択 (複数可)", accept_multiple_files=True)
-        if u_shps and st.button("🚀 境界修復一括処理"):
+        st.subheader("境界SHP一括修復")
+        u_shps = st.file_uploader("SHP/SHX/DBFを複数選択", accept_multiple_files=True, key="repair_multi")
+        if u_shps and st.button("🚀 境界修復"):
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, 'w') as zf, tempfile.TemporaryDirectory() as td:
                 for f in u_shps:
@@ -238,5 +259,6 @@ elif maker == "トプコン":
                         out_p = os.path.join(td, "fixed_" + base)
                         if repair_shp_file(os.path.join(td, base), out_p, base):
                             for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                                zf.write(out_p + ext, f"{base}/{base}{ext}")
+                                if os.path.exists(out_p + ext):
+                                    zf.write(out_p + ext, f"{base}/{base}{ext}")
             st.download_button("📥 修復データを保存", zip_buf.getvalue(), "repaired_boundaries.zip")
