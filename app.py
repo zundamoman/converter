@@ -14,6 +14,417 @@ import struct
 import numpy as np
 from collections import defaultdict
 from shapely.geometry import shape, Polygon, MultiPolygon, LineString
+from xml.etree import ElementTree as ET
+
+
+# ==========================================
+# Topcon XML圃場データ変換 共通処理
+# ※実データで確認済みのTopcon XML構造を対象
+# ==========================================
+TOPCON_WGS84_PRJ = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]]'
+
+def _topcon_local(tag):
+    return tag.split("}")[-1]
+
+def _topcon_safe_name(value):
+    value = re.sub(r'[\\/:*?"<>|]', '_', str(value or ''))
+    value = value.strip().strip(".")
+    return value or "_"
+
+def _topcon_point(element):
+    """Topcon PNT: C=latitude, D=longitude"""
+    try:
+        lat = float(element.attrib["C"])
+        lon = float(element.attrib["D"])
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return lat, lon
+    except Exception:
+        pass
+    return None
+
+def _topcon_safe_extract(zf, destination):
+    """ZIP Slipを避けて展開"""
+    root = os.path.abspath(destination)
+    for member in zf.infolist():
+        target = os.path.abspath(os.path.join(root, member.filename))
+        if target != root and not target.startswith(root + os.sep):
+            raise ValueError(f"安全でないZIP内パスを検出しました: {member.filename}")
+    zf.extractall(root)
+
+def _topcon_expand_nested_zips(root):
+    """ZIP内ZIPも展開。元ZIP自体は出力ZIPにはコピーしない。"""
+    processed = set()
+    while True:
+        targets = []
+        for current, _, files in os.walk(root):
+            for name in files:
+                path = os.path.join(current, name)
+                if name.lower().endswith(".zip") and path not in processed:
+                    targets.append(path)
+        if not targets:
+            break
+        for path in targets:
+            processed.add(path)
+            target = path + "_contents"
+            try:
+                os.makedirs(target, exist_ok=True)
+                with zipfile.ZipFile(path, "r") as nested:
+                    _topcon_safe_extract(nested, target)
+            except Exception:
+                # 壊れた/非ZIPのファイルは無視
+                continue
+
+def _topcon_dataset_dirs(root):
+    """
+    PFD*.XMLが存在するディレクトリを1データセットとして扱う。
+    Client/Farm IDが別ZIP間で重複しても混線しないようにする。
+    """
+    dirs = []
+    for current, _, files in os.walk(root):
+        if any(re.match(r"^PFD.*\.XML$", f, re.I) for f in files):
+            dirs.append(current)
+    return sorted(set(dirs))
+
+def _topcon_parse_dataset(dataset_dir):
+    roots = []
+    for name in os.listdir(dataset_dir):
+        if not name.lower().endswith(".xml"):
+            continue
+        path = os.path.join(dataset_dir, name)
+        try:
+            roots.append((path, ET.parse(path).getroot()))
+        except Exception:
+            continue
+
+    clients = {}
+    farms = {}
+    for _, root in roots:
+        for element in root.iter():
+            tag = _topcon_local(element.tag)
+            if tag == "CTR":
+                clients[element.attrib.get("A", "")] = element.attrib.get("B", "Client")
+            elif tag == "FRM":
+                farms[element.attrib.get("A", "")] = element.attrib.get("B", "Farm")
+
+    fields = []
+    seen = set()
+
+    for source, root in roots:
+        for pfd in root.iter():
+            if _topcon_local(pfd.tag) != "PFD":
+                continue
+
+            field_id = pfd.attrib.get("A", "")
+            field_name = pfd.attrib.get("C") or pfd.attrib.get("B") or field_id or "Field"
+            client_id = pfd.attrib.get("E", "")
+            farm_id = pfd.attrib.get("F", "")
+            client_name = clients.get(client_id, client_id or "Client")
+            farm_name = farms.get(farm_id, farm_id or "Farm")
+
+            key = (field_id, field_name, client_id, farm_id)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            boundaries = []
+            ablines = []
+
+            # Topcon確認データ:
+            # PLN -> LSG A="1" -> PNT = Boundary
+            for pln in pfd.iter():
+                if _topcon_local(pln.tag) != "PLN":
+                    continue
+                for lsg in pln.iter():
+                    if _topcon_local(lsg.tag) != "LSG" or lsg.attrib.get("A") != "1":
+                        continue
+                    points = []
+                    for pnt in lsg:
+                        if _topcon_local(pnt.tag) == "PNT":
+                            pt = _topcon_point(pnt)
+                            if pt:
+                                points.append(pt)
+                    if len(points) >= 3:
+                        boundaries.append(points)
+
+            # Topcon確認データ:
+            # GPN -> LSG A="5" -> PNT A="6"/"7" = A/B line
+            for gpn in pfd.iter():
+                if _topcon_local(gpn.tag) != "GPN":
+                    continue
+                guidance_name = gpn.attrib.get("B") or gpn.attrib.get("A") or "ABLine"
+                for lsg in gpn.iter():
+                    if _topcon_local(lsg.tag) != "LSG" or lsg.attrib.get("A") != "5":
+                        continue
+                    points = []
+                    for pnt in lsg:
+                        if _topcon_local(pnt.tag) == "PNT":
+                            pt = _topcon_point(pnt)
+                            if pt:
+                                points.append(pt)
+                    if len(points) >= 2:
+                        ablines.append({
+                            "name": guidance_name,
+                            "points": points
+                        })
+
+            fields.append({
+                "id": field_id,
+                "name": field_name,
+                "client": client_name,
+                "farm": farm_name,
+                "boundaries": boundaries,
+                "ablines": ablines,
+                "source": os.path.basename(source),
+            })
+
+    return fields
+
+def _topcon_unique_field_dir(output_root, field):
+    parent = os.path.join(
+        output_root,
+        _topcon_safe_name(field["client"]),
+        _topcon_safe_name(field["farm"]),
+    )
+    os.makedirs(parent, exist_ok=True)
+
+    base = os.path.join(parent, _topcon_safe_name(field["name"]))
+    if not os.path.exists(base):
+        return base
+
+    suffix = _topcon_safe_name(field["id"] or "duplicate")
+    candidate = base + "__" + suffix
+    n = 2
+    while os.path.exists(candidate):
+        candidate = base + "__" + suffix + f"_{n}"
+        n += 1
+    return candidate
+
+def _topcon_ensure_dirs(base):
+    boundary_dir = os.path.join(base, "Boundaries")
+    abline_dir = os.path.join(base, "ABlines")
+    os.makedirs(boundary_dir, exist_ok=True)
+    os.makedirs(abline_dir, exist_ok=True)
+    return boundary_dir, abline_dir
+
+def _topcon_clockwise_ring(points):
+    """Shapefile外周リングを時計回りに揃える"""
+    ring = [[lon, lat] for lat, lon in points]
+    if ring and ring[0] != ring[-1]:
+        ring.append(ring[0])
+    if len(ring) >= 4:
+        area2 = 0.0
+        for i in range(len(ring) - 1):
+            x1, y1 = ring[i]
+            x2, y2 = ring[i + 1]
+            area2 += x1 * y2 - x2 * y1
+        if area2 > 0:  # counter-clockwise
+            ring = list(reversed(ring))
+    return ring
+
+def _topcon_write_shp(base, field):
+    boundary_dir, abline_dir = _topcon_ensure_dirs(base)
+
+    for i, points in enumerate(field["boundaries"], 1):
+        stem = os.path.join(boundary_dir, f"Boundary_{i:03d}")
+        writer = shapefile.Writer(stem, shapeType=shapefile.POLYGON, encoding="utf-8")
+        writer.field("NAME", "C", 80)
+        writer.field("FIELD_ID", "C", 40)
+        writer.poly([_topcon_clockwise_ring(points)])
+        writer.record(f"Boundary_{i:03d}", field["id"])
+        writer.close()
+
+        with open(stem + ".prj", "w", encoding="ascii") as f:
+            f.write(TOPCON_WGS84_PRJ)
+        with open(stem + ".cpg", "w", encoding="ascii") as f:
+            f.write("UTF-8")
+
+    for i, item in enumerate(field["ablines"], 1):
+        points = item["points"]
+        stem = os.path.join(abline_dir, f"ABLine_{i:03d}")
+        writer = shapefile.Writer(stem, shapeType=shapefile.POLYLINE, encoding="utf-8")
+        writer.field("NAME", "C", 80)
+        writer.field("SOURCE", "C", 100)
+        writer.field("FIELD_ID", "C", 40)
+        writer.line([[[lon, lat] for lat, lon in points]])
+        writer.record(f"ABLine_{i:03d}", item["name"], field["id"])
+        writer.close()
+
+        with open(stem + ".prj", "w", encoding="ascii") as f:
+            f.write(TOPCON_WGS84_PRJ)
+        with open(stem + ".cpg", "w", encoding="ascii") as f:
+            f.write("UTF-8")
+
+def _topcon_write_geojson(base, field):
+    boundary_dir, abline_dir = _topcon_ensure_dirs(base)
+
+    boundary_features = []
+    for i, points in enumerate(field["boundaries"], 1):
+        ring = [[lon, lat] for lat, lon in points]
+        if ring and ring[0] != ring[-1]:
+            ring.append(ring[0])
+        boundary_features.append({
+            "type": "Feature",
+            "properties": {
+                "NAME": f"Boundary_{i:03d}",
+                "FIELD_ID": field["id"],
+            },
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [ring],
+            },
+        })
+
+    abline_features = []
+    for i, item in enumerate(field["ablines"], 1):
+        abline_features.append({
+            "type": "Feature",
+            "properties": {
+                "NAME": f"ABLine_{i:03d}",
+                "SOURCE": item["name"],
+                "FIELD_ID": field["id"],
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[lon, lat] for lat, lon in item["points"]],
+            },
+        })
+
+    with open(os.path.join(boundary_dir, "Boundaries.geojson"), "w", encoding="utf-8") as f:
+        json.dump({"type": "FeatureCollection", "features": boundary_features},
+                  f, ensure_ascii=False, indent=2)
+
+    with open(os.path.join(abline_dir, "ABlines.geojson"), "w", encoding="utf-8") as f:
+        json.dump({"type": "FeatureCollection", "features": abline_features},
+                  f, ensure_ascii=False, indent=2)
+
+def _topcon_write_isoxml_trial(base, field):
+    """
+    ジオメトリ中心の試験出力。
+    実機での完全なISOXML互換性を保証するものではない。
+    """
+    boundary_dir, abline_dir = _topcon_ensure_dirs(base)
+
+    def make_common():
+        root = ET.Element("TASKDATA", {
+            "VersionMajor": "4",
+            "VersionMinor": "0",
+            "Manufacturer": "Topcon Converter",
+        })
+        ET.SubElement(root, "CTR", {"A": "CTR-1", "B": field["client"]})
+        ET.SubElement(root, "FRM", {"A": "FRM-1", "B": field["farm"], "I": "CTR-1"})
+        pfd = ET.SubElement(root, "PFD", {
+            "A": "PFD-1",
+            "C": field["name"],
+            "E": "CTR-1",
+            "F": "FRM-1",
+        })
+        return root, pfd
+
+    root, pfd = make_common()
+    pln = ET.SubElement(pfd, "PLN", {"A": "1"})
+    for points in field["boundaries"]:
+        lsg = ET.SubElement(pln, "LSG", {"A": "1", "B": ""})
+        for lat, lon in points:
+            ET.SubElement(lsg, "PNT", {
+                "A": "2",
+                "C": f"{lat:.12f}",
+                "D": f"{lon:.12f}",
+            })
+    ET.indent(root, space="  ")
+    ET.ElementTree(root).write(
+        os.path.join(boundary_dir, "Boundaries.XML"),
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+    root, pfd = make_common()
+    ggp = ET.SubElement(pfd, "GGP", {"A": "GGP-1", "B": field["name"]})
+    for idx, item in enumerate(field["ablines"], 1):
+        gpn = ET.SubElement(ggp, "GPN", {
+            "A": f"GPN-{idx}",
+            "B": item["name"],
+            "C": "1",
+        })
+        lsg = ET.SubElement(gpn, "LSG", {"A": "5"})
+        for j, (lat, lon) in enumerate(item["points"]):
+            attrs = {
+                "A": "6" if j == 0 else ("7" if j == 1 else "2"),
+                "C": f"{lat:.12f}",
+                "D": f"{lon:.12f}",
+            }
+            if j == 0:
+                attrs["B"] = "A"
+            elif j == 1:
+                attrs["B"] = "B"
+            ET.SubElement(lsg, "PNT", attrs)
+
+    ET.indent(root, space="  ")
+    ET.ElementTree(root).write(
+        os.path.join(abline_dir, "ABlines.XML"),
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+def _topcon_process_uploaded_zip(uploaded_file, generated_root, output_format):
+    """
+    1つのアップロードZIPを解析して generated_root へ出力。
+    戻り値: PFD一覧
+    """
+    with tempfile.TemporaryDirectory() as td:
+        input_path = os.path.join(td, _topcon_safe_name(uploaded_file.name))
+        with open(input_path, "wb") as f:
+            f.write(uploaded_file.getvalue())
+
+        extract_root = os.path.join(td, "extracted")
+        os.makedirs(extract_root, exist_ok=True)
+
+        with zipfile.ZipFile(input_path, "r") as zf:
+            _topcon_safe_extract(zf, extract_root)
+
+        _topcon_expand_nested_zips(extract_root)
+
+        fields = []
+        for dataset_dir in _topcon_dataset_dirs(extract_root):
+            fields.extend(_topcon_parse_dataset(dataset_dir))
+
+        if not fields:
+            raise ValueError("TopconのPFD（圃場）XMLを検出できませんでした。")
+
+        for field in fields:
+            field_dir = _topcon_unique_field_dir(generated_root, field)
+            os.makedirs(field_dir, exist_ok=True)
+
+            if output_format == "SHP":
+                _topcon_write_shp(field_dir, field)
+            elif output_format == "GeoJSON":
+                _topcon_write_geojson(field_dir, field)
+            else:
+                _topcon_write_isoxml_trial(field_dir, field)
+
+            with open(os.path.join(field_dir, "INFO.txt"), "w", encoding="utf-8") as f:
+                f.write(
+                    f'Client: {field["client"]}\n'
+                    f'Farm: {field["farm"]}\n'
+                    f'Field: {field["name"]}\n'
+                    f'Field ID: {field["id"]}\n'
+                    f'Boundaries: {len(field["boundaries"])}\n'
+                    f'ABlines: {len(field["ablines"])}\n'
+                    f'Source XML: {field["source"]}\n'
+                )
+
+        return fields
+
+def _topcon_zip_generated(generated_root):
+    """今回生成したファイルだけをZIP化する"""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for current, _, files in os.walk(generated_root):
+            for name in files:
+                path = os.path.join(current, name)
+                zf.write(path, os.path.relpath(path, generated_root))
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 # --- ページ基本設定 ---
 st.set_page_config(page_title="Agri Data Converter", layout="wide")
@@ -87,12 +498,107 @@ if maker == "DJI":
 # トプコン のタブ構成
 # ==========================================
 elif maker == "トプコン":
-    tab0, tab1, tab2, tab3, = st.tabs([
+    tab_xml, tab0, tab1, tab2, tab3 = st.tabs([
+        "🗺️ Topcon XML → SHP / ISOXML",
         "🚀 トプコン一括変換",
         "📈 トプコン ABライン変換",
         "📈 トプコン 曲線変換",
         "🔧 トプコン 境界修復",
     ])
+
+    # --- Topcon XML圃場データ変換 ---
+    with tab_xml:
+        st.subheader("Topcon XML 圃場データ一括変換")
+        st.write(
+            "TopconからエクスポートしたXML形式のZIPをアップロードしてください。"
+            "複数ZIP、複数XML、複数PFD（圃場）、ZIP内ZIPに対応しています。"
+        )
+        st.caption(
+            "XML内の Client / Farm / Field 情報を使用して、"
+            "Boundaries と ABlines を圃場ごとに分けて出力します。"
+        )
+
+        xml_uploaded = st.file_uploader(
+            "Topcon ZIPをアップロード",
+            type=["zip"],
+            accept_multiple_files=True,
+            key="topcon_xml_zip",
+        )
+
+        xml_output_format = st.radio(
+            "出力形式",
+            ["SHP", "GeoJSON", "ISOXML（試験）"],
+            horizontal=True,
+            key="topcon_xml_format",
+        )
+
+        if xml_output_format == "ISOXML（試験）":
+            st.warning(
+                "ISOXMLは現在ジオメトリ中心の試験出力です。"
+                "対象端末での完全な読み込み互換性は未検証です。"
+            )
+
+        if xml_uploaded and st.button("🚀 Topcon XML 変換開始", key="btn_topcon_xml"):
+            output_format = "ISOXML" if xml_output_format.startswith("ISOXML") else xml_output_format
+
+            total_fields = 0
+            total_boundaries = 0
+            total_ablines = 0
+            errors = []
+
+            progress = st.progress(0)
+            status = st.empty()
+
+            with st.spinner("Topcon XMLを解析・変換しています..."):
+                with tempfile.TemporaryDirectory(prefix="topcon_generated_") as generated_root:
+                    for index, uploaded in enumerate(xml_uploaded, 1):
+                        status.write(f"{index}/{len(xml_uploaded)} 処理中: {uploaded.name}")
+                        try:
+                            fields = _topcon_process_uploaded_zip(
+                                uploaded,
+                                generated_root,
+                                output_format,
+                            )
+                            total_fields += len(fields)
+                            total_boundaries += sum(len(x["boundaries"]) for x in fields)
+                            total_ablines += sum(len(x["ablines"]) for x in fields)
+                        except Exception as exc:
+                            errors.append(f"{uploaded.name}: {exc}")
+
+                        progress.progress(index / len(xml_uploaded))
+
+                    result_zip = _topcon_zip_generated(generated_root)
+
+            status.empty()
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("入力ZIP", len(xml_uploaded))
+            c2.metric("圃場(PFD)", total_fields)
+            c3.metric("境界線", total_boundaries)
+            c4.metric("ABライン", total_ablines)
+
+            if total_fields > 0:
+                st.success("✅ 変換が完了しました。")
+                st.code(
+                    "Client / Farm / Field / Boundaries\n"
+                    "                      / ABlines",
+                    language=None,
+                )
+                st.download_button(
+                    "📥 変換結果をダウンロード",
+                    data=result_zip,
+                    file_name=f"Converted_{output_format}.zip",
+                    mime="application/zip",
+                    key="dl_topcon_xml",
+                )
+            else:
+                st.error("変換できるTopcon圃場データが見つかりませんでした。")
+
+            if errors:
+                with st.expander(f"⚠️ エラー詳細 ({len(errors)}件)"):
+                    for message in errors:
+                        st.write(message)
+
 
     # --- タブ0：トプコンデータ一括変換 (名称維持版) ---
     with tab0:

@@ -3,3 +3,4 @@ geopandas
 pandas
 pyshp
 shapely
+numpy
